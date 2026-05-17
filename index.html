@@ -1,0 +1,687 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>정부지원금 추천 시스템</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin:0; padding:0; }
+    body { font-family: -apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Pretendard','Noto Sans KR',sans-serif; background:#f4f7fc; color:#16202f; }
+    button, input, select { font: inherit; }
+    input[type="range"] { accent-color:#2563eb; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+const { useState, useMemo, useCallback, useEffect } = React;
+
+// ── 2026년 기준 중위소득 ──
+const MEDIAN = {1:2392013,2:3932658,3:5025353,4:6097773,5:7108192,6:8064805,7:8988428};
+
+// ── 시도 → 시군구 데이터 (법정동코드 기반) ──
+const REGION_DATA = {
+  "서울특별시":["종로구","중구","용산구","성동구","광진구","동대문구","중랑구","성북구","강북구","도봉구","노원구","은평구","서대문구","마포구","양천구","강서구","구로구","금천구","영등포구","동작구","관악구","서초구","강남구","송파구","강동구"],
+  "부산광역시":["중구","서구","동구","영도구","부산진구","동래구","남구","북구","해운대구","사하구","금정구","강서구","연제구","수영구","사상구","기장군"],
+  "대구광역시":["중구","동구","서구","남구","북구","수성구","달서구","달성군","군위군"],
+  "인천광역시":["중구","동구","미추홀구","연수구","남동구","부평구","계양구","서구","강화군","옹진군"],
+  "광주광역시":["동구","서구","남구","북구","광산구"],
+  "대전광역시":["동구","중구","서구","유성구","대덕구"],
+  "울산광역시":["중구","남구","동구","북구","울주군"],
+  "세종특별자치시":["세종시"],
+  "경기도":["수원시","성남시","의정부시","안양시","부천시","광명시","평택시","동두천시","안산시","고양시","과천시","구리시","남양주시","오산시","시흥시","군포시","의왕시","하남시","용인시","파주시","이천시","안성시","김포시","화성시","광주시","양주시","포천시","여주시","연천군","가평군","양평군"],
+  "강원특별자치도":["춘천시","원주시","강릉시","동해시","태백시","속초시","삼척시","홍천군","횡성군","영월군","평창군","정선군","철원군","화천군","양구군","인제군","고성군","양양군"],
+  "충청북도":["청주시","충주시","제천시","보은군","옥천군","영동군","증평군","진천군","괴산군","음성군","단양군"],
+  "충청남도":["천안시","공주시","보령시","아산시","서산시","논산시","계룡시","당진시","금산군","부여군","서천군","청양군","홍성군","예산군","태안군"],
+  "전북특별자치도":["전주시","군산시","익산시","정읍시","남원시","김제시","완주군","진안군","무주군","장수군","임실군","순창군","고창군","부안군"],
+  "전라남도":["목포시","여수시","순천시","나주시","광양시","담양군","곡성군","구례군","고흥군","보성군","화순군","장흥군","강진군","해남군","영암군","무안군","함평군","영광군","장성군","완도군","진도군","신안군"],
+  "경상북도":["포항시","경주시","김천시","안동시","구미시","영주시","영천시","상주시","문경시","경산시","의성군","청송군","영양군","영덕군","청도군","고령군","성주군","칠곡군","예천군","봉화군","울진군","울릉군"],
+  "경상남도":["창원시","진주시","통영시","사천시","김해시","밀양시","거제시","양산시","의령군","함안군","창녕군","고성군","남해군","하동군","산청군","함양군","거창군","합천군"],
+  "제주특별자치도":["제주시","서귀포시"],
+};
+
+const SIDOS = Object.keys(REGION_DATA);
+
+const DUP_GROUPS = [
+  {id:"g1",label:"청년 주거급여",sub:"같은 성격의 주거 지원은 하나만 선택",policies:["H001","H002"]},
+  {id:"g2",label:"청년 자산형성",sub:"청년내일저축계좌 또는 청년도약계좌 택 1",policies:["A001","A002"]},
+  {id:"g3",label:"국민취업지원제도",sub:"1유형과 2유형은 중복 불가",policies:["E001","E002"]},
+];
+
+const POLICIES = [
+  {id:"H001",name:"청년 월세 한시 특별지원",field:"주거·자립",minAge:19,maxAge:34,incomeRatio:60,monthlyIncomeCap:260,housing:"전세/월세",separateRequired:true,noHomeRequired:true,benefit:"월 최대 20만원 × 12개월",conditions:["중위소득 60% 이하","전세·월세 거주","부모와 별도 거주","무주택"],monthlyValue:200000,deadline:"2026-12-31",type:"현금"},
+  {id:"H002",name:"청년 주거급여 분리지급",field:"주거·자립",minAge:19,maxAge:30,incomeRatio:45,housing:"전세/월세",separateRequired:true,benefit:"기준임대료 범위 내 월 지급",conditions:["중위소득 45% 이하","전세·월세 거주","부모와 별도 거주"],monthlyValue:330000,deadline:"상시",type:"현금"},
+  {id:"H003",name:"버팀목 전세자금 대출",field:"주거·자립",minAge:19,maxAge:34,monthlyIncomeCap:417,housing:"전세/월세",noHomeRequired:true,benefit:"최대 2억원 연 1.8~2.4% 저금리",conditions:["연소득 5,000만원 이하","전세·월세 거주","무주택"],monthlyValue:0,deadline:"상시",type:"금융"},
+  {id:"H004",name:"월세 세액공제",field:"주거·자립",minAge:19,maxAge:120,monthlyIncomeCap:583,housing:"전세/월세",employedRequired:true,headRequired:true,noHomeRequired:true,benefit:"연 최대 127만원 세액공제",conditions:["연소득 7,000만원 이하","세대주·무주택","전세·월세 거주"],monthlyValue:105833,deadline:"2026-05-31",type:"세제"},
+  {id:"A001",name:"청년내일저축계좌",field:"주거·자립",minAge:19,maxAge:34,incomeRatio:100,monthlyIncomeCap:250,employedRequired:true,benefit:"정부 매칭 최대 월 30만원 (3년)",conditions:["월 소득 250만원 이하","근로·사업소득자"],monthlyValue:200000,deadline:"2026-07-31",type:"현금"},
+  {id:"A002",name:"청년도약계좌",field:"주거·자립",minAge:19,maxAge:34,monthlyIncomeCap:583,employedRequired:true,benefit:"정부기여금 월 최대 2.4만원 + 비과세",conditions:["연소득 7,500만원 이하","근로·사업소득자"],monthlyValue:24000,deadline:"상시",type:"현금"},
+  {id:"A003",name:"희망저축계좌 I",field:"주거·자립",minAge:19,maxAge:64,incomeRatio:50,employedRequired:true,lowIncomeIn:["기초생활수급","차상위"],benefit:"정부 매칭 월 30만원 (3년)",conditions:["중위소득 50% 이하","근로·사업소득자","저소득층"],monthlyValue:300000,deadline:"상시",type:"현금"},
+  {id:"E001",name:"국민취업지원제도 1유형",field:"고용·창업",minAge:15,maxAge:69,incomeRatio:60,unemployedRequired:true,benefit:"구직촉진수당 월 50만원 × 6개월",conditions:["중위소득 60% 이하","미취업자"],monthlyValue:500000,deadline:"상시",type:"현금"},
+  {id:"E002",name:"국민취업지원제도 2유형",field:"고용·창업",minAge:15,maxAge:69,unemployedRequired:true,benefit:"취업활동비용 최대 195만원",conditions:["미취업자","취업지원서비스 필요"],monthlyValue:32000,deadline:"상시",type:"현금"},
+  {id:"E003",name:"두루누리 사회보험료 지원",field:"고용·창업",minAge:19,maxAge:120,monthlyIncomeCap:270,employedRequired:true,smallWorkplaceRequired:true,benefit:"고용보험·국민연금 최대 80% 지원",conditions:["월 보수 270만원 미만","10인 미만 사업장"],monthlyValue:80000,deadline:"상시",type:"현금"},
+  {id:"E004",name:"청년일자리도약장려금",field:"고용·창업",minAge:15,maxAge:34,unemployedRequired:true,benefit:"월 60만원 × 최대 12개월",conditions:["5인 이상 사업체 취업","취업 6개월 이상 유지"],monthlyValue:600000,deadline:"2026-12-31",type:"현금"},
+  {id:"E005",name:"중소기업 취업자 소득세 감면",field:"고용·창업",minAge:15,maxAge:34,employedRequired:true,smeRequired:true,benefit:"소득세 70~90% 감면 (5년, 연 200만원 한도)",conditions:["중소기업 재직","청년 근로자"],monthlyValue:166667,deadline:"상시",type:"세제"},
+  {id:"E006",name:"청년 내일채움공제",field:"고용·창업",minAge:15,maxAge:34,employedRequired:true,smeRequired:true,benefit:"2년간 본인+기업+정부 합산 2,000만원",conditions:["중소·중견기업 정규직 취업"],monthlyValue:500000,deadline:"2026-12-31",type:"현금"},
+  {id:"S001",name:"국가장학금 I유형",field:"보육·교육",minAge:19,maxAge:120,studentIn:["대학생","대학원생"],benefit:"연 최대 570만원",conditions:["대학(원)생","소득 8분위 이하"],monthlyValue:475000,deadline:"2026-02-28",type:"현금"},
+  {id:"S002",name:"근로장학금",field:"보육·교육",minAge:19,maxAge:120,studentIn:["대학생","대학원생"],benefit:"교내·외 근로장학 시간당 최저임금 이상",conditions:["대학(원)생","소득 8분위 이하"],monthlyValue:300000,deadline:"상시",type:"현금"},
+  {id:"S003",name:"이공계 국가우수장학금",field:"보육·교육",minAge:19,maxAge:120,studentIn:["대학생","대학원생"],benefit:"등록금 전액 + 생활비 월 100만원",conditions:["이공계열 재학생","성적 상위 3%"],monthlyValue:1000000,deadline:"2026-03-31",type:"현금"},
+  {id:"C001",name:"부모급여",field:"보육·교육",minAge:19,maxAge:120,children:1,youngestIn:["0-1세"],benefit:"0세 월 100만원, 1세 월 50만원",conditions:["만 2세 미만 자녀 양육"],monthlyValue:750000,deadline:"상시",type:"현금"},
+  {id:"C002",name:"아동수당",field:"보육·교육",minAge:19,maxAge:120,children:1,youngestIn:["0-1세","2-7세"],benefit:"만 8세 미만 아동 1인당 월 10만원",conditions:["만 8세 미만 자녀"],monthlyValue:100000,deadline:"상시",type:"현금"},
+  {id:"C003",name:"육아휴직급여",field:"고용·창업",minAge:19,maxAge:120,children:1,employedRequired:true,insuranceRequired:true,benefit:"통상임금 80% × 12개월 (상한 월 150만원)",conditions:["고용보험 180일 이상","만 8세 이하 자녀"],monthlyValue:1500000,deadline:"상시",type:"현금"},
+  {id:"C004",name:"한부모가족 아동양육비",field:"생활안정",minAge:19,maxAge:120,singleParentRequired:true,children:1,incomeRatio:60,benefit:"자녀 1인당 월 20만원",conditions:["한부모 가정","중위소득 60% 이하"],monthlyValue:200000,deadline:"상시",type:"현금"},
+  {id:"W001",name:"장애인연금",field:"생활안정",minAge:18,maxAge:64,disabledRequired:true,benefit:"기초급여 최대 월 33.4만원 + 부가급여",conditions:["중증장애인 (1·2급)"],monthlyValue:334000,deadline:"상시",type:"현금"},
+  {id:"W002",name:"장애인 활동지원",field:"생활안정",minAge:6,maxAge:65,disabledRequired:true,benefit:"활동지원급여 월 최대 190시간",conditions:["장애인 등록","활동지원 등급"],monthlyValue:1000000,deadline:"상시",type:"서비스"},
+  {id:"W003",name:"국가유공자 의료급여",field:"보건·의료",minAge:19,maxAge:120,veteranRequired:true,benefit:"보훈병원 무료·감면 진료",conditions:["국가유공자 및 유족"],monthlyValue:100000,deadline:"상시",type:"서비스"},
+  {id:"L001",name:"생계급여",field:"생활안정",minAge:19,maxAge:120,incomeRatio:32,lowIncomeIn:["기초생활수급"],benefit:"가구별 최저보장수준 지급",conditions:["중위소득 32% 이하","기초생활수급"],monthlyValue:700000,deadline:"상시",type:"현금"},
+  {id:"L002",name:"근로·자녀장려금",field:"생활안정",minAge:18,maxAge:65,annualIncomeCap:{single:2200,dual:4400,parent:3200},employedRequired:true,benefit:"단독 최대 165만원, 홑벌이 285만원/년",conditions:["근로·사업소득 보유","재산 2억4천만원 미만"],monthlyValue:137500,deadline:"2026-05-31",type:"세제"},
+  {id:"L003",name:"에너지바우처",field:"생활안정",minAge:19,maxAge:120,incomeRatio:40,lowIncomeIn:["기초생활수급","차상위"],benefit:"연 12~50만원 에너지 비용 지원",conditions:["중위소득 40% 이하","에너지 취약계층"],monthlyValue:25000,deadline:"상시",type:"현금"},
+  {id:"L004",name:"통신비 감면",field:"생활안정",minAge:19,maxAge:120,lowIncomeIn:["기초생활수급","차상위"],benefit:"월 최대 2만원 통신비 감면",conditions:["기초생활수급자","차상위계층"],monthlyValue:20000,deadline:"상시",type:"현금"},
+  {id:"N001",name:"기초연금",field:"생활안정",minAge:65,maxAge:120,incomeRatio:70,benefit:"단독 최대 월 33.4만원",conditions:["65세 이상","소득하위 70%"],monthlyValue:334000,deadline:"상시",type:"현금"},
+  {id:"N002",name:"노인 장기요양급여",field:"보건·의료",minAge:65,maxAge:120,benefit:"재가·시설급여 월 85~100% 지원",conditions:["65세 이상","장기요양 등급 판정"],monthlyValue:500000,deadline:"상시",type:"서비스"},
+  {id:"B001",name:"청년창업사관학교",field:"고용·창업",minAge:19,maxAge:39,startupRequired:true,benefit:"사업화 자금 최대 1억원",conditions:["만 39세 이하","창업 3년 이내"],monthlyValue:0,deadline:"2026-03-31",type:"금융"},
+  {id:"B002",name:"청년어촌정착지원",field:"농림축산어업",minAge:18,maxAge:39,coastalRequired:true,coastalSidos:["부산광역시","인천광역시","울산광역시","강원특별자치도","충청남도","전북특별자치도","전라남도","경상북도","경상남도","제주특별자치도"],benefit:"1년차 월 110만원, 2년차 100만원",conditions:["어촌지역 거주","어업경영 3년 이하"],monthlyValue:1100000,deadline:"2026-03-31",type:"현금"},
+];
+
+const SCENARIOS = [
+  {id:"default",label:"현재 조건",apply:p=>({...p})},
+  {id:"move",label:"전세·월세로 이사하면?",apply:p=>({...p,housing:"월세",noHome:true,headOfHousehold:true,separate:true})},
+  {id:"loseJob",label:"미취업이 된다면?",apply:p=>({...p,employed:"미취업"})},
+  {id:"incomeDown",label:"소득 30만원 줄면?",apply:p=>({...p,monthlyIncome:Math.max(0,p.monthlyIncome-30)})},
+  {id:"student",label:"대학생이 된다면?",apply:p=>({...p,student:"대학생(학부)"})},
+  {id:"baby",label:"자녀가 생긴다면?",apply:p=>({...p,children:Math.max(1,p.children),youngest:p.youngest==="없음"?"0-1세":p.youngest})},
+  {id:"child2",label:"자녀가 2명이라면?",apply:p=>({...p,children:2})},
+];
+
+const FS = {
+  "주거·자립":{bg:"#e7f7f1",text:"#0f7a5a"},
+  "보육·교육":{bg:"#edf4ff",text:"#1d4ed8"},
+  "고용·창업":{bg:"#fff2df",text:"#a05a00"},
+  "생활안정":{bg:"#f1eeff",text:"#6547cc"},
+  "행정·안전":{bg:"#f4f6fa",text:"#4b5563"},
+  "보건·의료":{bg:"#ffedf0",text:"#bb3f4d"},
+  "농림축산어업":{bg:"#eef7e7",text:"#4e7b1a"},
+};
+const TS = {
+  "현금":{bg:"#edf4ff",text:"#1d4ed8"},
+  "세제":{bg:"#f1eeff",text:"#6547cc"},
+  "금융":{bg:"#e7f7f1",text:"#0f7a5a"},
+  "서비스":{bg:"#f4f6fa",text:"#4b5563"},
+};
+
+const INIT = {
+  // 기본
+  age:27, household:1, householdType:"단독",
+  // 소득
+  monthlyIncome:230, incomeType:"근로소득", assetLevel:"모름",
+  // 지역
+  sido:"서울특별시", sgg:"종로구",
+  // 주거
+  housing:"월세", headOfHousehold:true, noHome:true, separate:false,
+  rentMonthly:50, depositUnder100M:true,
+  // 취업
+  employed:"취업", student:"없음",
+  sme:false, smallWorkplace:false, insurance:true,
+  startup:false, companySize:"중소기업",
+  // 복지
+  lowIncome:"없음", singleParent:false,
+  disabled:false, disabledGrade:"없음",
+  veteran:false,
+  // 가족
+  children:0, youngest:"없음",
+  // 특수
+  coastal:false,
+};
+
+function normalizeHousing(v) {
+  if (v === "전세/월세") return "전세/월세";
+  if (v === "전세" || v === "월세") return "전세/월세";
+  return v;
+}
+
+function normalizeStudent(v) {
+  if (!v) return v;
+  if (v.startsWith("대학생")) return "대학생";
+  if (v.startsWith("대학원생")) return "대학원생";
+  return v;
+}
+
+function normalizeLowIncome(v) {
+  if (!v) return v;
+  if (v.includes("기초생활")) return "기초생활수급";
+  if (v.includes("차상위")) return "차상위";
+  return v;
+}
+
+function checkPolicy(p, d) {
+  const m = MEDIAN[Math.min(d.household,7)]/10000;
+  const incR = (d.monthlyIncome/m)*100;
+  const annualInc = d.monthlyIncome*12;
+  const working = d.employed==="취업"||d.employed==="자영업";
+  const housing = normalizeHousing(d.housing);
+  const student = normalizeStudent(d.student);
+  const lowIncome = normalizeLowIncome(d.lowIncome);
+  if (d.age<p.minAge||d.age>p.maxAge) return false;
+  if (p.incomeRatio!=null&&incR>p.incomeRatio) return false;
+  if (p.monthlyIncomeCap!=null&&d.monthlyIncome>p.monthlyIncomeCap) return false;
+  if (p.annualIncomeCap) {
+    const cap = d.householdType==="맞벌이"?p.annualIncomeCap.dual:d.householdType==="홑벌이"?p.annualIncomeCap.parent:p.annualIncomeCap.single;
+    if (cap&&annualInc>cap*10000) return false;
+  }
+  if (p.coastalSidos&&!p.coastalSidos.includes(d.sido)) return false;
+  if (p.housing&&normalizeHousing(p.housing)!==housing) return false;
+  if (p.employedRequired&&!working) return false;
+  if (p.unemployedRequired&&working) return false;
+  if (p.studentIn&&!p.studentIn.includes(student)) return false;
+  if (p.headRequired&&!d.headOfHousehold) return false;
+  if (p.noHomeRequired&&!d.noHome) return false;
+  if (p.separateRequired&&!d.separate) return false;
+  if (p.smeRequired&&!d.sme) return false;
+  if (p.smallWorkplaceRequired&&!d.smallWorkplace) return false;
+  if (p.insuranceRequired&&!d.insurance) return false;
+  if (p.lowIncomeIn&&!p.lowIncomeIn.includes(lowIncome)) return false;
+  if (p.singleParentRequired&&!d.singleParent) return false;
+  if (p.disabledRequired&&!d.disabled) return false;
+  if (p.veteranRequired&&!d.veteran) return false;
+  if (p.children!=null&&d.children<p.children) return false;
+  if (p.youngestIn&&!p.youngestIn.includes(d.youngest)) return false;
+  if (p.startupRequired&&!d.startup) return false;
+  if (p.coastalRequired&&!d.coastal) return false;
+  return true;
+}
+
+function score(p, d, status) {
+  let s = Math.min((p.monthlyValue||0)/10000, 200);
+  const housing = normalizeHousing(d.housing);
+  const student = normalizeStudent(d.student);
+  const lowIncome = normalizeLowIncome(d.lowIncome);
+  if (p.type==="현금") s+=18; else if (p.type==="세제") s+=12; else if (p.type==="금융") s+=6;
+  if (p.field==="주거·자립"&&housing==="전세/월세") s+=20;
+  if (p.field==="보육·교육"&&student!=="없음") s+=20;
+  if (p.field==="생활안정"&&(lowIncome==="차상위"||lowIncome==="기초생활수급")) s+=18;
+  if (status[p.id]==="current") s-=25;
+  if (status[p.id]==="past") s-=8;
+  return s;
+}
+
+const mon = n => n>0?`${Math.round(n/10000).toLocaleString()}만원`:"—";
+const ann = n => n>0?`${Math.round(n*12/10000).toLocaleString()}만원`:"—";
+
+function App() {
+  const [profile, setProfile] = useState(INIT);
+  const [scenario, setScenario] = useState("default");
+  const [checks, setChecks] = useState({});
+  const [radios, setRadios] = useState({});
+  const [status, setStatus] = useState({});
+  const [expanded, setExpanded] = useState({});
+
+  const sggsForSido = useMemo(()=>REGION_DATA[profile.sido]||[], [profile.sido]);
+
+  const upd = useCallback((k,v) => {
+    setProfile(p => {
+      const next = {...p,[k]:v};
+      if (k==="sido") next.sgg = (REGION_DATA[v]||[])[0]||"";
+      if (k==="children"&&v===0) next.youngest="없음";
+      if (k==="disabled"&&!v) next.disabledGrade="없음";
+      return next;
+    });
+    setChecks({}); setRadios({});
+  },[]);
+
+  const activeProfile = useMemo(()=>{
+    const s=SCENARIOS.find(s=>s.id===scenario)||SCENARIOS[0];
+    return s.apply({...profile});
+  },[profile,scenario]);
+
+  const eligible = useMemo(()=>POLICIES.filter(p=>checkPolicy(p,activeProfile)),[activeProfile]);
+  const baseEligible = useMemo(()=>POLICIES.filter(p=>checkPolicy(p,profile)),[profile]);
+
+  const autoSelect = useCallback((el)=>{
+    const nc={},nr={};
+    DUP_GROUPS.forEach(g=>{
+      const opts=g.policies.filter(id=>el.find(p=>p.id===id)).map(id=>POLICIES.find(p=>p.id===id));
+      if(!opts.length)return;
+      const cur=opts.find(p=>status[p.id]==="current");
+      const best=cur||opts.sort((a,b)=>score(b,activeProfile,status)-score(a,activeProfile,status))[0];
+      if(best)nr[g.id]=best.id;
+    });
+    el.forEach(p=>{ const inG=DUP_GROUPS.some(g=>g.policies.includes(p.id)); if(!inG&&status[p.id]!=="current")nc[p.id]=true; });
+    setChecks(nc);setRadios(nr);
+  },[activeProfile,status]);
+
+  const selectedIds = useMemo(()=>{
+    const ids=new Set();
+    const es=new Set(eligible.map(p=>p.id));
+    Object.keys(status).forEach(id=>{if(status[id]==="current"&&es.has(id))ids.add(id);});
+    DUP_GROUPS.forEach(g=>{
+      const cur=g.policies.find(id=>status[id]==="current"&&es.has(id));
+      if(cur)return;
+      if(radios[g.id]&&es.has(radios[g.id]))ids.add(radios[g.id]);
+    });
+    eligible.forEach(p=>{const inG=DUP_GROUPS.some(g=>g.policies.includes(p.id));if(!inG&&checks[p.id])ids.add(p.id);});
+    return ids;
+  },[eligible,checks,radios,status]);
+
+  const selPolicies = POLICIES.filter(p=>selectedIds.has(p.id));
+  const totalMon = selPolicies.reduce((s,p)=>s+p.monthlyValue,0);
+
+  const blocks = useMemo(()=>{
+    const sorted=eligible.slice().sort((a,b)=>score(b,activeProfile,status)-score(a,activeProfile,status));
+    const usedG=new Set();
+    const result=[];
+    sorted.forEach(policy=>{
+      const g=DUP_GROUPS.find(g=>g.policies.includes(policy.id));
+      if(!g){result.push({kind:"single",policy});return;}
+      if(usedG.has(g.id))return;
+      const opts=g.policies.filter(id=>eligible.find(p=>p.id===id)).map(id=>POLICIES.find(p=>p.id===id)).sort((a,b)=>score(b,activeProfile,status)-score(a,activeProfile,status));
+      result.push(opts.length>=2?{kind:"group",group:g,opts}:{kind:"single",policy:opts[0]});
+      usedG.add(g.id);
+    });
+    return result.map((b,i)=>({...b,rank:i+1}));
+  },[eligible,activeProfile,status]);
+
+  const gained=useMemo(()=>eligible.filter(p=>!baseEligible.find(e=>e.id===p.id)),[eligible,baseEligible]);
+  const lost=useMemo(()=>baseEligible.filter(p=>!eligible.find(e=>e.id===p.id)),[eligible,baseEligible]);
+
+  const medianM=MEDIAN[Math.min(profile.household,7)]/10000;
+  const incR=(profile.monthlyIncome/medianM)*100;
+
+  useEffect(()=>{if(!Object.keys(checks).length&&!Object.keys(radios).length&&eligible.length)autoSelect(eligible);},[eligible]);
+
+  const toggleStatus=useCallback((id,mode)=>{
+    setStatus(s=>{
+      const next={...s};
+      next[id]=next[id]===mode?null:mode;
+      if(next[id]==="current"){
+        const g=DUP_GROUPS.find(g=>g.policies.includes(id));
+        if(g)g.policies.filter(pid=>pid!==id).forEach(pid=>{if(next[pid]==="current")delete next[pid];});
+        setRadios(r=>({...r,...(g?{[g.id]:id}:{})}));
+      }
+      return next;
+    });
+  },[]);
+
+  // ── UI ──
+  const Tag=({bg,text,children})=><span style={{fontSize:11,padding:"3px 9px",borderRadius:100,background:bg,color:text,fontWeight:700,whiteSpace:"nowrap"}}>{children}</span>;
+
+  const Sl=({label,val,k,min,max,step=1,unit,hint})=>(
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+        <label style={{fontSize:12,color:"#66748b",fontWeight:700}}>{label}{hint&&<span style={{fontSize:10,color:"#9aa5b8",marginLeft:4}}>{hint}</span>}</label>
+        <span style={{fontSize:13,fontWeight:800,color:"#16202f"}}>{val}<span style={{fontSize:11,color:"#9aa5b8",marginLeft:2}}>{unit}</span></span>
+      </div>
+      <input type="range" min={min} max={max} step={step} value={val} onChange={e=>upd(k,Number(e.target.value))} style={{width:"100%"}}/>
+    </div>
+  );
+
+  const Sel=({label,val,k,opts,hint})=>(
+    <div>
+      <div style={{fontSize:12,color:"#66748b",fontWeight:700,marginBottom:4}}>{label}{hint&&<span style={{fontSize:10,color:"#9aa5b8",marginLeft:4}}>{hint}</span>}</div>
+      <select value={val} onChange={e=>upd(k,e.target.value)} style={{width:"100%",padding:"9px 10px",border:"1px solid #e2e8f2",borderRadius:10,fontSize:13,background:"#fff",color:"#16202f",fontFamily:"inherit"}}>
+        {opts.map(o=><option key={o}>{o}</option>)}
+      </select>
+    </div>
+  );
+
+  const Bool=({label,val,k,hint})=>(
+    <div>
+      <div style={{fontSize:12,color:"#66748b",fontWeight:700,marginBottom:4}}>{label}{hint&&<span style={{fontSize:10,color:"#9aa5b8",marginLeft:4}}>{hint}</span>}</div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+        {["아니오","예"].map((o,i)=>{
+          const a=(!!val&&i===1)||(!val&&i===0);
+          return <button key={o} onClick={()=>upd(k,i===1)} style={{padding:"8px 0",borderRadius:10,border:`1px solid ${a?"#2563eb":"#e2e8f2"}`,background:a?"#2563eb":"#fff",color:a?"#fff":"#66748b",fontSize:13,fontWeight:700,cursor:"pointer"}}>{o}</button>;
+        })}
+      </div>
+    </div>
+  );
+
+  const NumSeg=({label,val,k,opts})=>(
+    <div>
+      <div style={{fontSize:12,color:"#66748b",fontWeight:700,marginBottom:4}}>{label}</div>
+      <div style={{display:"flex",gap:5}}>
+        {opts.map(o=>{const v=o==="4+"?4:o;const a=val===v;return <button key={o} onClick={()=>upd(k,v)} style={{flex:1,padding:"8px 0",borderRadius:10,border:`1px solid ${a?"#2563eb":"#e2e8f2"}`,background:a?"#2563eb":"#fff",color:a?"#fff":"#66748b",fontSize:13,fontWeight:700,cursor:"pointer"}}>{o}</button>;})}
+      </div>
+    </div>
+  );
+
+  const Section=({icon,title,children})=>(
+    <div style={{padding:"14px 0",borderBottom:"1px solid #f1f5f9"}}>
+      <div style={{display:"flex",alignItems:"center",gap:6,fontWeight:800,fontSize:12,color:"#66748b",marginBottom:12,textTransform:"uppercase",letterSpacing:"0.06em"}}>
+        <span>{icon}</span>{title}
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:12}}>{children}</div>
+    </div>
+  );
+
+  const StatusBtns=({id})=>(
+    <div style={{display:"flex",gap:5,marginTop:7}}>
+      {[["이용중","current","#ebf4ff","#145dbe","#9ac4ff"],["이력","past","#f3f5f8","#596579","#d7dde7"]].map(([lb,mode,bg,color,bd])=>(
+        <button key={mode} onClick={()=>toggleStatus(id,mode)} style={{flex:1,padding:"6px 0",borderRadius:8,border:`1px solid ${status[id]===mode?bd:"#e2e8f2"}`,background:status[id]===mode?bg:"#fff",color:status[id]===mode?color:"#66748b",fontSize:11,fontWeight:800,cursor:"pointer"}}>{lb}</button>
+      ))}
+    </div>
+  );
+
+  const DetailBox=({p})=>(
+    <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid #f1f5f9",display:"flex",flexDirection:"column",gap:3}}>
+      {[`연령: 만 ${p.minAge}~${p.maxAge===120?"제한 없음":p.maxAge+"세"}`,
+        p.incomeRatio&&`기준 중위소득 ${p.incomeRatio}% 이하`,
+        p.monthlyIncomeCap&&`월 소득 ${p.monthlyIncomeCap}만원 이하`,
+        p.coastalSidos&&`지원 지역: 어촌 해안 시도`,
+        ...p.conditions
+      ].filter(Boolean).map((c,i)=>(
+        <div key={i} style={{display:"flex",gap:8,fontSize:12,color:"#66748b"}}><span style={{color:"#cbd5e1",flexShrink:0}}>—</span>{c}</div>
+      ))}
+    </div>
+  );
+
+  const SingleRow=({rank,policy,isNew})=>{
+    const inG=DUP_GROUPS.some(g=>g.policies.includes(policy.id));
+    const cur=status[policy.id]==="current";
+    const sel=cur||(!inG&&!!checks[policy.id]);
+    const open=expanded[policy.id];
+    const {bg,text}=FS[policy.field]||{bg:"#f4f6fa",text:"#4b5563"};
+    const {bg:tb,text:tt}=TS[policy.type]||{bg:"#f4f6fa",text:"#4b5563"};
+    return (
+      <div style={{border:`${sel?"2px solid #2563eb":"1px solid #e2e8f2"}`,borderRadius:16,background:sel?"#f8faff":"#fff",overflow:"hidden",transition:"all .15s"}}>
+        <div style={{display:"grid",gridTemplateColumns:"44px 1fr 100px 120px",gap:12,padding:"14px 16px",alignItems:"start"}}>
+          <div style={{width:36,height:36,borderRadius:11,background:"#eef4ff",color:"#22416c",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:900,fontSize:14,border:"1px solid #d9e6ff",flexShrink:0}}>{rank}</div>
+          <div style={{cursor:"pointer",minWidth:0}} onClick={()=>setExpanded(e=>({...e,[policy.id]:!e[policy.id]}))}>
+            <div style={{display:"flex",gap:5,marginBottom:5,flexWrap:"wrap"}}>
+              <Tag bg={bg} text={text}>{policy.field}</Tag>
+              <Tag bg={tb} text={tt}>{policy.type}</Tag>
+              {isNew&&<Tag bg="#e7f7f1" text="#0f7a5a">✦ 새로 추가</Tag>}
+              {policy.monthlyValue>0&&<Tag bg="#eef0ff" text="#4a3aa5">월 {Math.round(policy.monthlyValue/10000)}만원~</Tag>}
+              {status[policy.id]==="current"&&<Tag bg="#ebf4ff" text="#145dbe">이용중</Tag>}
+              {status[policy.id]==="past"&&<Tag bg="#f3f5f8" text="#596579">이력</Tag>}
+            </div>
+            <div style={{fontWeight:800,fontSize:14,color:"#16202f",marginBottom:2,letterSpacing:"-0.02em"}}>{policy.name}</div>
+            <div style={{fontSize:12,color:"#66748b",lineHeight:1.5}}>{policy.benefit}</div>
+            <div style={{marginTop:5,fontSize:11,color:"#9aa5b8",display:"flex",gap:8}}>
+              <span style={{padding:"1px 7px",borderRadius:3,background:policy.deadline==="상시"?"#e7f7f1":"#fff2df",color:policy.deadline==="상시"?"#0f7a5a":"#a05a00",fontWeight:700}}>{policy.deadline==="상시"?"상시 신청":policy.deadline+" 마감"}</span>
+            </div>
+            {open&&<DetailBox p={policy}/>}
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontSize:20,fontWeight:900,color:"#16202f",letterSpacing:"-0.03em"}}>{mon(policy.monthlyValue)}</div>
+            <div style={{fontSize:10,color:"#9aa5b8",marginTop:2}}>{policy.type==="금융"?"금융지원":policy.type==="세제"?"세제·월환산":"월 환산 참고"}</div>
+          </div>
+          <div>
+            <button onClick={()=>{if(cur)return;setChecks(c=>({...c,[policy.id]:!c[policy.id]}));}} style={{width:"100%",padding:"8px 0",borderRadius:10,border:`2px solid ${sel&&!cur?"#2563eb":"transparent"}`,background:cur?"#f3f5f8":sel?"#fff":"#2563eb",color:cur?"#596579":sel?"#2563eb":"#fff",fontSize:12,fontWeight:800,cursor:cur?"default":"pointer"}}>
+              {cur?"자동 포함됨":sel?"선택 해제":"담기 +"}
+            </button>
+            <StatusBtns id={policy.id}/>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const GroupRow=({rank,group,opts,isNew})=>{
+    const curId=opts.find(p=>status[p.id]==="current")?.id;
+    const selId=curId||(radios[group.id]&&opts.find(p=>p.id===radios[group.id])?.id)||null;
+    return (
+      <div style={{border:`${selId?"2px solid #c27811":"1px solid #e2e8f2"}`,borderRadius:16,background:selId?"#fffbf3":"#fff",overflow:"hidden"}}>
+        <div style={{display:"grid",gridTemplateColumns:"44px 1fr",gap:12,padding:"14px 16px",alignItems:"start"}}>
+          <div style={{width:36,height:36,borderRadius:11,background:"#eef4ff",color:"#22416c",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:900,fontSize:14,border:"1px solid #d9e6ff",flexShrink:0}}>{rank}</div>
+          <div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,gap:10}}>
+              <div>
+                <div style={{fontWeight:800,fontSize:14,letterSpacing:"-0.025em",color:"#16202f",marginBottom:2}}>{group.label}</div>
+                <div style={{fontSize:12,color:"#66748b"}}>{group.sub}</div>
+              </div>
+              <span style={{padding:"4px 10px",borderRadius:100,fontSize:11,fontWeight:800,background:"#fff4df",border:"1px solid #efcd8d",color:"#915600",whiteSpace:"nowrap",flexShrink:0}}>중복수혜 불가 · 택 1</span>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:`repeat(${opts.length},1fr)`,gap:10}}>
+              {opts.map(p=>{
+                const active=selId===p.id;
+                const cur=status[p.id]==="current";
+                const {bg,text}=FS[p.field]||{bg:"#f4f6fa",text:"#4b5563"};
+                const open=expanded["__opt__"+p.id];
+                return (
+                  <div key={p.id} style={{border:`${active?"2px solid #c27811":"1px solid #e2e8f2"}`,borderRadius:13,background:active?"#fff8ef":"#fff",padding:12,display:"flex",flexDirection:"column",gap:7}}>
+                    <div>
+                      <div style={{display:"flex",gap:5,marginBottom:5,flexWrap:"wrap"}}>
+                        <Tag bg={bg} text={text}>{p.field}</Tag>
+                        {isNew&&gained.find(e=>e.id===p.id)&&<Tag bg="#e7f7f1" text="#0f7a5a">✦ 신규</Tag>}
+                        {p.monthlyValue>0&&<Tag bg="#eef0ff" text="#4a3aa5">월 {Math.round(p.monthlyValue/10000)}만원~</Tag>}
+                        {status[p.id]==="current"&&<Tag bg="#ebf4ff" text="#145dbe">이용중</Tag>}
+                      </div>
+                      <div style={{fontWeight:800,fontSize:14,color:"#16202f",marginBottom:2}}>{p.name}</div>
+                      <div style={{fontSize:20,fontWeight:900,color:"#8c5400",marginBottom:3}}>{mon(p.monthlyValue)}</div>
+                      <div style={{fontSize:12,color:"#66748b",lineHeight:1.5}}>{p.benefit}</div>
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                      {p.conditions.slice(0,2).map((c,i)=><div key={i} style={{fontSize:11,color:"#9aa5b8",display:"flex",gap:5}}><span>•</span>{c}</div>)}
+                    </div>
+                    <button onClick={()=>setExpanded(e=>({...e,["__opt__"+p.id]:!e["__opt__"+p.id]}))} style={{fontSize:11,background:"none",border:"none",color:"#9aa5b8",cursor:"pointer",textAlign:"left",padding:0}}>{open?"▲ 접기":"▼ 상세 조건"}</button>
+                    {open&&<DetailBox p={p}/>}
+                    <div style={{marginTop:"auto"}}>
+                      <button onClick={()=>{if(cur)return;setRadios(r=>({...r,[group.id]:r[group.id]===p.id?null:p.id}));}} style={{width:"100%",padding:"8px 0",borderRadius:10,border:`2px solid ${active&&!cur?"#c27811":"transparent"}`,background:cur?"#f3f5f8":active?"#fff":"#c27811",color:cur?"#596579":active?"#c27811":"#fff",fontSize:12,fontWeight:800,cursor:cur?"default":"pointer"}}>
+                        {cur?"자동 포함됨":active?"선택 해제":"이 항목 선택"}
+                      </button>
+                      <StatusBtns id={p.id}/>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const currentPolicies=Object.keys(status).filter(id=>status[id]==="current").map(id=>POLICIES.find(p=>p.id===id)).filter(Boolean);
+  const newPolicies=[...selectedIds].filter(id=>status[id]!=="current").map(id=>POLICIES.find(p=>p.id===id)).filter(Boolean);
+  const pastPolicies=Object.keys(status).filter(id=>status[id]==="past").map(id=>POLICIES.find(p=>p.id===id)).filter(Boolean);
+
+  return (
+    <div style={{fontFamily:"-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Pretendard','Noto Sans KR',sans-serif",background:"linear-gradient(180deg,#f9fbff 0%,#f4f7fc 100%)",minHeight:"100vh",padding:"20px 16px 40px",color:"#16202f"}}>
+
+      <div style={{maxWidth:1440,margin:"0 auto 16px",display:"flex",alignItems:"flex-end",gap:12,flexWrap:"wrap"}}>
+        <div>
+          <div style={{display:"inline-flex",alignItems:"center",gap:7,padding:"6px 12px",borderRadius:999,background:"#fff",border:"1px solid #e2e8f2",fontSize:12,fontWeight:800,color:"#1d4ed8",marginBottom:8,boxShadow:"0 4px 10px rgba(20,34,59,.06)"}}>✨ 프로토타입 · 2026년 기준 중위소득 적용</div>
+          <h1 style={{margin:"0 0 5px",fontSize:26,fontWeight:900,letterSpacing:"-0.04em",lineHeight:1.1}}>사용자 맞춤 정부지원금 추천 시스템</h1>
+          <p style={{margin:0,color:"#66748b",fontSize:13}}>추천 순서대로 보고, 중복수혜 불가 항목만 골라 선택하세요.</p>
+        </div>
+      </div>
+
+      <div style={{maxWidth:1440,margin:"0 auto",display:"grid",gridTemplateColumns:"360px minmax(0,1fr)",gap:18,alignItems:"start"}}>
+
+        {/* ── 사이드바 ── */}
+        <div style={{display:"flex",flexDirection:"column",gap:0,position:"sticky",top:16,background:"#fff",borderRadius:20,border:"1px solid #e2e8f2",boxShadow:"0 8px 24px rgba(20,34,59,.07)",overflow:"hidden"}}>
+
+          {/* 중위소득 뱃지 */}
+          <div style={{padding:"16px 18px",background:"linear-gradient(135deg,#eff6ff,#fff 70%)",borderBottom:"1px solid #e2e8f2"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <span style={{fontWeight:900,fontSize:15,letterSpacing:"-0.03em"}}>내 정보 입력</span>
+              <span style={{fontSize:11,fontWeight:800,padding:"4px 9px",borderRadius:100,background:"#edf4ff",color:"#1d4ed8"}}>상세 버전</span>
+            </div>
+            <div style={{padding:"12px 14px",borderRadius:14,background:"#fff",border:"1px solid #d6e4ff"}}>
+              <div style={{fontSize:11,color:"#66748b",fontWeight:700,marginBottom:3}}>기준 중위소득 비율 (2026년, {profile.household}인 가구)</div>
+              <div style={{fontSize:26,fontWeight:900,letterSpacing:"-0.04em",color:incR<=60?"#0f7a5a":incR<=100?"#a05a00":"#16202f"}}>{incR.toFixed(1)}%</div>
+              <div style={{fontSize:11,color:"#9aa5b8"}}>기준 {Math.round(medianM).toLocaleString()}만원 / {profile.sido} {profile.sgg}</div>
+            </div>
+          </div>
+
+          {/* 입력 폼 */}
+          <div style={{padding:"0 18px 18px",overflowY:"auto",maxHeight:"calc(100vh - 200px)"}}>
+
+            <Section icon="👤" title="기본 정보">
+              <Sl label="나이 (만)" val={profile.age} k="age" min={15} max={80} unit="세"/>
+              <Sl label="가구원 수" val={profile.household} k="household" min={1} max={7} unit="인" hint="함께 사는 가족"/>
+              <Sel label="가구 유형" val={profile.householdType} k="householdType" opts={["단독","홑벌이","맞벌이"]} hint="맞벌이=배우자 소득 300만원 이상"/>
+            </Section>
+
+            <Section icon="📍" title="거주 지역">
+              <Sel label="시·도" val={profile.sido} k="sido" opts={SIDOS}/>
+              <Sel label="시·군·구" val={profile.sgg} k="sgg" opts={sggsForSido}/>
+            </Section>
+
+            <Section icon="💰" title="소득 · 재산">
+              <Sl label="월 소득 (세전)" val={profile.monthlyIncome} k="monthlyIncome" min={0} max={800} step={10} unit="만원"/>
+              <Sel label="소득 유형" val={profile.incomeType} k="incomeType" opts={["근로소득","사업소득","근로+사업소득","무소득","종교인소득"]}/>
+              <Sel label="총 재산 규모" val={profile.assetLevel} k="assetLevel" opts={["5천만원 미만","5천만원~1억원 미만","1억~3억원 미만","3억원 이상","모름"]}/>
+            </Section>
+
+            <Section icon="🏠" title="주거 상황">
+              <Sel label="주거 형태" val={profile.housing} k="housing" opts={["자가","전세","월세","무상거주(가족 소유)","기숙사·사택"]}/>
+              {(profile.housing==="월세")&&(
+                <Sl label="월세 금액" val={profile.rentMonthly} k="rentMonthly" min={0} max={200} step={5} unit="만원"/>
+              )}
+              {(profile.housing==="전세"||profile.housing==="월세")&&(
+                <Bool label="보증금 1억원 미만" val={profile.depositUnder100M} k="depositUnder100M"/>
+              )}
+              <Bool label="세대주 여부" val={profile.headOfHousehold} k="headOfHousehold"/>
+              <Bool label="무주택 여부" val={profile.noHome} k="noHome" hint="본인 명의 주택 없음"/>
+              <Bool label="부모와 별도 거주" val={profile.separate} k="separate" hint="주민등록 분리 포함"/>
+            </Section>
+
+            <Section icon="💼" title="취업 · 학업">
+              <Sel label="취업 상태" val={profile.employed} k="employed" opts={["취업","미취업","자영업","프리랜서","일용직"]}/>
+              {(profile.employed==="취업")&&(
+                <>
+                  <Sel label="사업장 규모" val={profile.companySize} k="companySize" opts={["중소기업","중견기업","대기업","공공기관·공무원","기타"]}/>
+                  <Bool label="10인 미만 사업장" val={profile.smallWorkplace} k="smallWorkplace"/>
+                  <Bool label="고용보험 가입" val={profile.insurance} k="insurance"/>
+                </>
+              )}
+              {(profile.employed==="자영업")&&(
+                <Bool label="창업 3년 이내" val={profile.startup} k="startup"/>
+              )}
+              <Sel label="학생 상태" val={profile.student} k="student" opts={["없음","대학생(학부)","대학원생(석사)","대학원생(박사)","직업훈련 중"]}/>
+            </Section>
+
+            <Section icon="👨‍👩‍👧" title="가족 · 자녀">
+              <NumSeg label="미성년 자녀 수 (만 18세 미만)" val={profile.children} k="children" opts={[0,1,2,3,"4+"]}/>
+              {profile.children>0&&(
+                <Sel label="가장 어린 자녀 연령대" val={profile.youngest} k="youngest" opts={["0-1세","2-7세","8-12세","13-18세"]}/>
+              )}
+              <Bool label="한부모 가정" val={profile.singleParent} k="singleParent"/>
+            </Section>
+
+            <Section icon="🫶" title="복지 · 특수 상황">
+              <Sel label="기초생활·차상위 상태" val={profile.lowIncome} k="lowIncome" opts={["없음","차상위계층","기초생활수급자"]}/>
+              <Bool label="장애인 등록" val={profile.disabled} k="disabled"/>
+              {profile.disabled&&(
+                <Sel label="장애 정도" val={profile.disabledGrade} k="disabledGrade" opts={["없음","경증(3-6급)","중증(1-2급)"]}/>
+              )}
+              <Bool label="국가유공자 (본인 또는 유족)" val={profile.veteran} k="veteran"/>
+              <Bool label="어촌 지역 거주 및 어업 종사" val={profile.coastal} k="coastal"/>
+            </Section>
+
+          </div>
+        </div>
+
+        {/* ── 메인 ── */}
+        <div style={{display:"flex",flexDirection:"column",gap:14}}>
+
+          {/* 요약 통계 */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
+            {[
+              {k:"수혜 가능 정책",v:`${eligible.length}건`,sub:"현재 조건 기준",primary:false},
+              {k:"현재 이용중",v:`${currentPolicies.length}건`,sub:"자동 포함됨",primary:false},
+              {k:"월 예상 혜택",v:mon(totalMon),sub:"선택 조합 기준",primary:true},
+              {k:"연 예상 혜택",v:ann(totalMon),sub:"현금·세제 월 환산",primary:true},
+            ].map(s=>(
+              <div key={s.k} style={{borderRadius:18,padding:"14px 16px",boxShadow:"0 6px 18px rgba(20,34,59,.07)",background:s.primary?"linear-gradient(135deg,#0f3f82,#235dd7)":"#fff",border:s.primary?"none":"1px solid #edf1f7",color:s.primary?"#fff":"#16202f"}}>
+                <div style={{fontSize:11,color:s.primary?"rgba(255,255,255,.65)":"#66748b",marginBottom:5,fontWeight:700}}>{s.k}</div>
+                <div style={{fontSize:24,fontWeight:900,letterSpacing:"-0.04em",lineHeight:1.05}}>{s.v}</div>
+                <div style={{fontSize:11,color:s.primary?"rgba(255,255,255,.6)":"#9aa5b8",marginTop:3}}>{s.sub}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* What-if */}
+          <div style={{background:"#fff",borderRadius:18,border:"1px solid #edf1f7",padding:18,boxShadow:"0 6px 18px rgba(20,34,59,.06)"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,gap:10}}>
+              <div>
+                <div style={{fontWeight:800,fontSize:15,letterSpacing:"-0.025em",marginBottom:2}}>빠른 What-if 시뮬레이션</div>
+                <div style={{fontSize:12,color:"#66748b"}}>조건을 바꾸면 어떤 정책이 달라지는지 바로 확인해요.</div>
+              </div>
+              {scenario!=="default"&&<button onClick={()=>{setScenario("default");setChecks({});setRadios({});}} style={{padding:"6px 12px",borderRadius:8,border:"1px solid #e2e8f2",background:"#fff",color:"#66748b",fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>해제</button>}
+            </div>
+            <div style={{display:"flex",gap:7,flexWrap:"wrap"}}>
+              {SCENARIOS.map(s=>{
+                const nd=s.apply({...profile});
+                const ne=POLICIES.filter(p=>checkPolicy(p,nd));
+                const diff=ne.length-baseEligible.length;
+                const a=scenario===s.id;
+                return (
+                  <button key={s.id} onClick={()=>{setScenario(s.id);setChecks({});setRadios({});}} style={{padding:"7px 12px",borderRadius:100,border:`1.5px solid ${a?"#2563eb":"#e2e8f2"}`,background:a?"#2563eb":"#fff",color:a?"#fff":"#66748b",fontSize:12,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:5}}>
+                    {s.label}
+                    {s.id!=="default"&&diff>0&&<span style={{background:a?"rgba(255,255,255,.25)":"#e7f7f1",color:a?"#fff":"#0f7a5a",borderRadius:100,fontSize:11,padding:"1px 7px",fontWeight:800}}>+{diff}</span>}
+                    {s.id!=="default"&&diff<0&&<span style={{background:a?"rgba(255,255,255,.25)":"#ffedf0",color:a?"#fff":"#bb3f4d",borderRadius:100,fontSize:11,padding:"1px 7px",fontWeight:800}}>{diff}</span>}
+                  </button>
+                );
+              })}
+            </div>
+            {scenario!=="default"&&(gained.length>0||lost.length>0)&&(
+              <div style={{display:"flex",gap:8,marginTop:10}}>
+                {gained.length>0&&<div style={{flex:1,background:"#e7f7f1",borderRadius:10,padding:"8px 12px"}}><div style={{fontSize:11,color:"#0f7a5a",fontWeight:700,marginBottom:1}}>새로 받을 수 있는 정책</div><div style={{fontSize:16,fontWeight:900,color:"#0f7a5a"}}>+{gained.length}건</div></div>}
+                {lost.length>0&&<div style={{flex:1,background:"#ffedf0",borderRadius:10,padding:"8px 12px"}}><div style={{fontSize:11,color:"#bb3f4d",fontWeight:700,marginBottom:1}}>빠지는 정책</div><div style={{fontSize:16,fontWeight:900,color:"#bb3f4d"}}>-{lost.length}건</div></div>}
+              </div>
+            )}
+          </div>
+
+          {/* 추천 목록 */}
+          <div style={{background:"#fff",borderRadius:18,border:"1px solid #edf1f7",padding:18,boxShadow:"0 6px 18px rgba(20,34,59,.06)"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,marginBottom:14}}>
+              <div>
+                <div style={{fontWeight:800,fontSize:15,letterSpacing:"-0.025em",marginBottom:2}}>추천 순서대로 보기</div>
+                <div style={{fontSize:12,color:"#66748b",lineHeight:1.55}}>순서는 세로로 내려가고, <strong>중복수혜 불가</strong> 항목만 가로로 비교해요.</div>
+              </div>
+              <div style={{display:"flex",gap:7,flexShrink:0}}>
+                <button onClick={()=>{setChecks({});setRadios({});}} style={{padding:"7px 12px",borderRadius:9,border:"1px solid #e2e8f2",background:"#fff",color:"#66748b",fontSize:12,fontWeight:700,cursor:"pointer"}}>초기화</button>
+                <button onClick={()=>autoSelect(eligible)} style={{padding:"8px 14px",borderRadius:9,border:"none",background:"#2563eb",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",boxShadow:"0 4px 12px rgba(37,99,235,.2)"}}>추천안 자동 선택</button>
+              </div>
+            </div>
+            {blocks.length===0
+              ?<div style={{padding:"3rem",textAlign:"center",color:"#66748b",fontSize:13}}>현재 조건에 맞는 정책이 없습니다. 조건을 바꿔보세요.</div>
+              :<div style={{display:"flex",flexDirection:"column",gap:10}}>
+                {blocks.map(b=>b.kind==="single"
+                  ?<SingleRow key={b.policy.id} rank={b.rank} policy={b.policy} isNew={!!gained.find(e=>e.id===b.policy.id)}/>
+                  :<GroupRow key={b.group.id} rank={b.rank} group={b.group} opts={b.opts} isNew={scenario!=="default"}/>
+                )}
+              </div>
+            }
+          </div>
+
+          {/* 현재 조합 요약 */}
+          <div style={{background:"#fff",borderRadius:18,border:"1px solid #edf1f7",padding:18,boxShadow:"0 6px 18px rgba(20,34,59,.06)"}}>
+            <div style={{fontWeight:800,fontSize:15,letterSpacing:"-0.025em",marginBottom:4}}>현재 조합 요약</div>
+            <div style={{fontSize:12,color:"#66748b",marginBottom:14}}>이용중인 정책, 새로 선택한 정책, 이용 이력을 분리해서 보여드려요.</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10}}>
+              {[
+                {title:"현재 이용중",list:currentPolicies,bg:"#ebf4ff",text:"#145dbe",bd:"#9ec7ff"},
+                {title:"새로 선택한 정책",list:newPolicies,bg:"#f0f7ff",text:"#2563eb",bd:"#bfdbfe"},
+                {title:"이용 이력",list:pastPolicies,bg:"#f3f5f8",text:"#596579",bd:"#d7dde7"},
+              ].map(col=>(
+                <div key={col.title} style={{padding:12,border:"1px solid #edf1f7",borderRadius:14,background:"#fbfcff",minHeight:90}}>
+                  <div style={{fontSize:12,color:"#66748b",fontWeight:700,marginBottom:8}}>{col.title}</div>
+                  <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                    {col.list.length>0?col.list.map(p=><span key={p.id} style={{padding:"5px 10px",borderRadius:100,border:`1px solid ${col.bd}`,background:col.bg,fontSize:11,fontWeight:700,color:col.text}}>{p.name}</span>):<span style={{fontSize:12,color:"#c1c9d6"}}>없음</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div style={{fontSize:11,color:"#9aa5b8",padding:"2px"}}>
+            * 2026년 기준 중위소득 적용 · 법정동코드 기반 시군구 데이터 · 월/연 혜택은 참고용이며 실제 수혜는 기관 심사 필요 ({POLICIES.length}건 수록)
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+
+  </script>
+</body>
+</html>
